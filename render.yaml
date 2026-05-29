@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: flip-jivo-after-hours-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app
+    envVars:
+      - key: BOT_TOKEN
+        value: flip_jivo_nightbot_8Kz2026
+      - key: TIMEZONE
+        value: Asia/Almaty
+      - key: JIVO_API_URL
+        value: CHANGE_ME_AFTER_JIVO_REPLY
+      - key: AUTO_REPLY_TEXT
+        value: "Здравствуйте!\n\nБлагодарим за обращение 💙\n\nСейчас наши операторы отдыхают, но Ваше сообщение уже получено.\n\nМы работаем ежедневно с 08:00 до 00:00 и обязательно ответим Вам, как только начнётся рабочее время."
