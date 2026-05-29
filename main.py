@@ -89,7 +89,7 @@ def is_valid_client_message(payload: dict) -> bool:
 
 def build_bot_message(payload: dict) -> dict:
     return {
-        "id": payload.get("id"),
+        "id": f"bot-{int(time_module.time() * 1000)}",
         "client_id": payload.get("client_id"),
         "chat_id": payload.get("chat_id"),
         "message": {
