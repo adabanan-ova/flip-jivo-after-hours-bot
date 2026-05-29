@@ -81,9 +81,6 @@ def is_valid_client_message(payload: dict) -> bool:
     if payload.get("event") != "CLIENT_MESSAGE":
         return False
 
-    if payload.get("agents_online") is True:
-        return False
-
     message = payload.get("message", {})
     if message.get("type") != "TEXT":
         return False
