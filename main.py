@@ -1,21 +1,18 @@
 import os
 import sqlite3
+import time as time_module
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ====== НАСТРОЙКИ ======
 BOT_TOKEN = os.getenv("BOT_TOKEN", "CHANGE_ME")
-JIVO_API_URL = os.getenv("JIVO_API_URL", "CHANGE_ME_AFTER_JIVO_REPLY")
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Almaty")
+FORCE_AFTER_HOURS = os.getenv("FORCE_AFTER_HOURS", "false").lower() == "true"
 
-# Рабочее время операторов: ежедневно с 08:00 до 00:00
 WORK_START = time(8, 0)
-WORK_END = time(0, 0)
 
 AUTO_REPLY_TEXT = os.getenv(
     "AUTO_REPLY_TEXT",
@@ -50,20 +47,14 @@ def now_almaty():
 
 
 def is_working_time() -> bool:
-    """
-    Рабочее время: 08:00–00:00.
-    Нерабочее время: 00:00–07:59.
-    """
+    if FORCE_AFTER_HOURS:
+        return False
+
     now = now_almaty().time()
-    return WORK_START <= now
+    return now >= WORK_START
 
 
 def current_period_key() -> str:
-    """
-    Ключ нерабочего периода.
-    Для ночи 00:00–07:59 используем текущую дату.
-    Например: night_2026-05-29
-    """
     now = now_almaty()
     return f"night_{now.date().isoformat()}"
 
@@ -86,81 +77,36 @@ def mark_replied(chat_id: str, period_key: str):
         conn.commit()
 
 
-def extract_chat_id(payload: dict):
-    """
-    Jivo может прислать разные поля в зависимости от типа события.
-    После первого тестового события при необходимости подправим под реальный payload.
-    """
-    return (
-        payload.get("chat_id")
-        or payload.get("chat", {}).get("id")
-        or payload.get("dialog_id")
-        or payload.get("client_id")
-        or payload.get("client", {}).get("id")
-        or payload.get("visitor", {}).get("id")
-    )
-
-
-def is_client_message(payload: dict) -> bool:
-    """
-    Бот должен отвечать только на текстовые сообщения клиента.
-    Не отвечаем на сообщения операторов, ботов и системные события.
-    """
-    sender_type = str(payload.get("sender", {}).get("type", "")).lower()
-    author_type = str(payload.get("author", {}).get("type", "")).lower()
-    event_type = str(payload.get("event", "")).lower()
-
-    blocked_words = ["bot", "agent", "operator", "admin", "manager"]
-    if any(word in sender_type for word in blocked_words):
-        return False
-    if any(word in author_type for word in blocked_words):
+def is_valid_client_message(payload: dict) -> bool:
+    if payload.get("event") != "CLIENT_MESSAGE":
         return False
 
-    text = (
-        payload.get("text")
-        or payload.get("message", {}).get("text")
-        or payload.get("body", {}).get("text")
-    )
+    if payload.get("agents_online") is True:
+        return False
 
+    message = payload.get("message", {})
+    if message.get("type") != "TEXT":
+        return False
+
+    text = message.get("text")
     if not text:
-        return False
-
-    # Если Jivo явно передаст, что чат назначен оператору, не отвечаем
-    assigned_agent = (
-        payload.get("agent")
-        or payload.get("operator")
-        or payload.get("assigned_agent")
-        or payload.get("chat", {}).get("agent")
-        or payload.get("chat", {}).get("operator")
-    )
-    if assigned_agent:
         return False
 
     return True
 
 
-def send_jivo_message(chat_id: str, text: str):
-    """
-    ВАЖНО:
-    После ответного письма Jivo может понадобиться поменять формат body
-    под их точный пример API-запроса.
-    """
-    if not JIVO_API_URL or JIVO_API_URL == "CHANGE_ME_AFTER_JIVO_REPLY":
-        print("JIVO_API_URL is not set. Message was not sent.")
-        return
-
-    body = {
-        "chat_id": chat_id,
-        "text": text
+def build_bot_response(payload: dict) -> dict:
+    return {
+        "event": "BOT_MESSAGE",
+        "id": payload.get("id"),
+        "client_id": payload.get("client_id"),
+        "chat_id": payload.get("chat_id"),
+        "message": {
+            "type": "TEXT",
+            "text": AUTO_REPLY_TEXT,
+            "timestamp": int(time_module.time())
+        }
     }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {BOT_TOKEN}"
-    }
-
-    response = requests.post(JIVO_API_URL, json=body, headers=headers, timeout=10)
-    response.raise_for_status()
 
 
 @app.route("/", methods=["GET"])
@@ -176,27 +122,18 @@ def jivo_webhook():
     if is_working_time():
         return jsonify({"status": "working_time_no_reply"})
 
-    if not is_client_message(payload):
+    if not is_valid_client_message(payload):
         return jsonify({"status": "ignored_event"})
 
-    chat_id = extract_chat_id(payload)
-
-    if not chat_id:
-        return jsonify({"status": "no_chat_id", "payload": payload}), 400
-
+    chat_id = str(payload.get("chat_id"))
     period_key = current_period_key()
 
-    if already_replied(str(chat_id), period_key):
+    if already_replied(chat_id, period_key):
         return jsonify({"status": "already_replied_this_night"})
 
-    try:
-        send_jivo_message(str(chat_id), AUTO_REPLY_TEXT)
-        mark_replied(str(chat_id), period_key)
-    except Exception as exc:
-        print("Send error:", exc)
-        return jsonify({"status": "send_error", "error": str(exc)}), 500
+    mark_replied(chat_id, period_key)
 
-    return jsonify({"status": "auto_reply_sent"})
+    return jsonify(build_bot_response(payload))
 
 
 if __name__ == "__main__":
