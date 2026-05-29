@@ -4,11 +4,13 @@ import time as time_module
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
+import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "CHANGE_ME")
+JIVO_API_URL = os.getenv("JIVO_API_URL", "TEMP")
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Almaty")
 FORCE_AFTER_HOURS = os.getenv("FORCE_AFTER_HOURS", "false").lower() == "true"
 
@@ -49,14 +51,11 @@ def now_almaty():
 def is_working_time() -> bool:
     if FORCE_AFTER_HOURS:
         return False
-
-    now = now_almaty().time()
-    return now >= WORK_START
+    return now_almaty().time() >= WORK_START
 
 
 def current_period_key() -> str:
-    now = now_almaty()
-    return f"night_{now.date().isoformat()}"
+    return f"night_{now_almaty().date().isoformat()}"
 
 
 def already_replied(chat_id: str, period_key: str) -> bool:
@@ -85,16 +84,11 @@ def is_valid_client_message(payload: dict) -> bool:
     if message.get("type") != "TEXT":
         return False
 
-    text = message.get("text")
-    if not text:
-        return False
-
-    return True
+    return bool(message.get("text"))
 
 
-def build_bot_response(payload: dict) -> dict:
+def build_bot_message(payload: dict) -> dict:
     return {
-        "event": "BOT_MESSAGE",
         "id": payload.get("id"),
         "client_id": payload.get("client_id"),
         "chat_id": payload.get("chat_id"),
@@ -102,8 +96,24 @@ def build_bot_response(payload: dict) -> dict:
             "type": "TEXT",
             "text": AUTO_REPLY_TEXT,
             "timestamp": int(time_module.time())
-        }
+        },
+        "event": "BOT_MESSAGE"
     }
+
+
+def send_bot_message(payload: dict):
+    body = build_bot_message(payload)
+    print("Sending BOT_MESSAGE:", body)
+
+    response = requests.post(
+        JIVO_API_URL,
+        json=body,
+        headers={"Content-Type": "application/json"},
+        timeout=3
+    )
+
+    print("Jivo response:", response.status_code, response.text)
+    response.raise_for_status()
 
 
 @app.route("/", methods=["GET"])
@@ -128,9 +138,13 @@ def jivo_webhook():
     if already_replied(chat_id, period_key):
         return jsonify({"status": "already_replied_this_night"})
 
-    mark_replied(chat_id, period_key)
-
-    return jsonify(build_bot_response(payload))
+    try:
+        send_bot_message(payload)
+        mark_replied(chat_id, period_key)
+        return jsonify({"status": "auto_reply_sent"})
+    except Exception as e:
+        print("Send error:", str(e))
+        return jsonify({"status": "send_error", "error": str(e)}), 500
 
 
 if __name__ == "__main__":
